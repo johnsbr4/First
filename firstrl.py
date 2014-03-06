@@ -34,6 +34,15 @@ INVENTORY_WIDTH = 50
 
 HEAL_AMOUNT = 4
 
+LIGHTNING_DAMAGE = 20
+LIGHTNING_RANGE = 5
+
+CONFUSED_NUM_TURNS = 10
+CONFUSED_RANGE = 8
+
+FIREBALL_RADIUS = 3
+FIREBALL_DAMAGE = 12
+
 color_dark_wall = libtcod.Color(0, 0, 100)
 color_light_wall = libtcod.Color(130, 110, 50)
 color_dark_ground = libtcod.Color(50, 50, 150)
@@ -113,6 +122,10 @@ class Object:
 	  objects.remove(self)
 	  objects.insert(0, self)
 	  
+     def distance(self, x, y):
+	  #return the diance to some coordinates
+	  return math.sqrt((x - self.x) ** 2 + (y - self.y) ** 2)
+	  
 class Fighter:
     #combat-related properties and methods (monster, player, NPC).
      def __init__(self, hp, defense, power, death_function=None):
@@ -165,6 +178,22 @@ class BasicMonster:
 	       elif player.fighter.hp > 0:
 		    monster.fighter.attack(player)
 		    
+class ConfusedMonster:
+     #AI for a temp confused monster (reverts to previous AI after awhile)
+     def __init__(self, old_ai, num_turns=CONFUSED_NUM_TURNS):
+	  self.old_ai = old_ai
+	  self.num_turns = num_turns
+	  
+     def take_turn(self):
+	  if self.num_turns > 0: #still confused
+	       #move in a random direction, and decrease num_turns
+	       self.owner.move(libtcod.random_get_int(0, -1, 1), libtcod.random_get_int(0, -1, 1))
+	       self.num_turns -= 1
+	       
+	  else: #restore previous AI (this one will be deleted)
+	       self.owner.ai = self.old_ai
+	       message('The ' + self.owner.name + ' is no longer confused!', libtcod.red)
+		    
 class Item:
      #an item that can be picked up and used
      def __init__(self, use_function=None):
@@ -186,6 +215,14 @@ class Item:
 	       inventory.append(self.owner)
 	       objects.remove(self.owner)
 	       message('You picked up a ' + self.owner.name + '!', libtcod.green)
+	       
+     def drop(self):
+	  #add to the map and remove from the player's inventory, place it on the color_dark_ground
+	  objects.append(self.owner)
+	  inventory.remove(self.owner)
+	  self.owner.x = player.x
+	  self.owner.y = player.y
+	  message('You dropped a ' + self.owner.name + '.', libtcod.yellow)
 
 class Rect:
      #a rectangle on the map, used to characterize a room
@@ -214,7 +251,42 @@ def cast_heal():
      message('Your wounds start to feel better!', libtcod.light_violet)
      player.fighter.heal(HEAL_AMOUNT)
      
+def cast_lightning():
+     #find closest enemy (inside a max range) and damage it
+     monster = closest_monster(LIGHTNING_RANGE)
+     if monster is None: #no enemy found withing range
+	  message('No enemy is close enough to strike.', libtcod.red)
+	  return 'cancelled'
      
+     #zap it!
+     message('A lightning bolt strikes the ' + monster.name + ' with a loud thunderclap! The damage is '
+	     + str(LIGHTNING_DAMAGE) + ' hit points.', libtcod.light_blue)
+     monster.fighter.take_damage(LIGHTNING_DAMAGE)
+     
+def cast_confuse():
+     #ask the player for a target to confuse
+     message('Left-click an enemy to confuse it, or right-click to cancel.', libtcod.light_cyan)
+     monster = target_monster(CONFUSED_RANGE)
+     if monster is None: return 'cancelled' #no enemy in max range
+	  
+     #replace the monster's AI with a 'confused' one; after time, it will be restored
+     old_ai = monster.ai
+     monster.ai = ConfusedMonster(old_ai)
+     monster.ai.owner = monster #tell the new component who owns it
+     message('The eyes of the ' + monster.name + ' look vacant, as he starts to stumble around!', libtcod.light_green) 
+     
+def cast_fireball():
+     #ask the player for a target tile to throw a fireball at
+     message('Left-click a target tile for the fireball, or right-click to cancel.', libtcod.light_cyan)
+     (x, y) = target_tile()
+     if x is None: return 'cancelled'
+     message('The fireball explodes buring everything withing ' + str(FIREBALL_RADIUS) + ' tiles!', libtcod.orange)
+     
+     for obj in objects: #damage every fighter in range, including the player
+	  if obj.distance(x, y) <= FIREBALL_RADIUS and obj.fighter:
+	       message('The ' + obj.name + ' gets burned for ' + str(FIREBALL_DAMAGE) + ' hit points.', libtcod.orange)
+	       obj.fighter.take_damage(FIREBALL_DAMAGE)
+	       
 	  
 def make_map():
      global map 
@@ -329,20 +401,71 @@ def place_objects(room):
 	       
      num_items = libtcod.random_get_int(0, 0, MAX_ROOM_ITEMS)
      for i in range(num_items):
+	  
 	  #choose random spot for this item
 	  x = libtcod.random_get_int(0, room.x1+1, room.x2-1)
 	  y = libtcod.random_get_int(0, room.y1+1, room.y2-1)
 	  
 	  #only place it if the tile is not blocked
 	  if not is_blocked(x, y):
-	       #create a healing potion
-	       item_component = Item(use_function=cast_heal)
-	       item = Object(x, y, '!', 'healing potion', libtcod.violet, item=item_component)
+	       dice = libtcod.random_get_int(0, 0, 100)
+	       if dice < 70:
+		    #create a healing poition (70% chance)
+		    item_component = Item(use_function=cast_heal)
+		    item = Object(x, y, '!', 'healing potion', libtcod.violet, item=item_component)
+		    
+	       elif dice < 75+10:
+		    #create lighting bolt scroll (10% chance)
+		    item_component = Item(use_function=cast_lightning)
+		    item = Object(x, y, '#', 'scroll of lightning bolt', libtcod.light_yellow, item=item_component)
+		    
+	       elif dice < 70+10+10:
+		    #create a fireball scroll (10% chance)
+		    item_component = Item(use_function=cast_fireball)
+		    item = Object(x, y, '#', 'scroll of fireball', libtcod.light_yellow, item=item_component)
+		    
+	       else:
+		    #create a confuse scroll (10% chance)
+		    item_component = Item(use_function=cast_confuse)
+		    item = Object(x, y, '#', 'scroll of confuse', libtcod.light_yellow, item=item_component)
 	       
 	       objects.append(item)
 	       item.send_to_back()
-	       
+
+def target_tile(max_range=None):
+     #return the position of a tile left-clicked in a player's FOV (optionally in a range), or (None,None) if right-clicked 
+     global key, mouse
+     while True:
+	  #render the screen, this erases the inventory and show the name of objects under the mouse
+	  libtcod.console_flush()
+	  libtcod.sys_check_for_event(libtcod.EVENT_KEY_PRESS|libtcod.EVENT_MOUSE, key, mouse)
+	  render_all()
 	  
+	  (x, y) = (mouse.cx, mouse.cy)
+	  
+	  #if mouse.lbutton_pressed:
+	  #     return (x, y)
+	  
+	  if mouse.rbutton_pressed or key.vk == libtcod.KEY_ESCAPE:
+	       return (None, None) #cancel if the player right-clicked or pressed KEY_ESCAPE
+	  
+	  #accept the target if the player clicked in FOV and in case a range is specified, if it's in that range
+	  if(mouse.lbutton_pressed and libtcod.map_is_in_fov(fov_map, x, y) and
+	       (max_range is None or player.distance(x, y) <= max_range)):
+	       return (x, y)
+	  
+def target_monster(max_range=None):
+     #returns a clicked monster inside FOV up to a range, or None if right-clicked
+     while True:
+	  (x, y) = target_tile(max_range)
+	  if x is None: #player cancelled
+	       return None
+	  
+	  #return the first clicked monster, otherwise continue looping
+	  for obj in objects:
+	       if obj.x == x and obj.y == y and obj.fighter and obj != player:
+		    return obj
+	       	       
 def is_blocked(x, y):
      #first, test the map tile
      if map[x][y].blocked:
@@ -458,6 +581,20 @@ def monster_death(monster):
      monster.name = 'remains of ' + monster.name
      
      monster.send_to_back()
+     
+def closest_monster(max_range):
+     #find closest enemy, up to a max range and in the players FOV
+     closest_enemy = None
+     closest_dist = max_range + 1 #start with (slightly more than) max range
+     
+     for object in objects:
+	  if object.fighter and not object == player and libtcod.map_is_in_fov(fov_map, object.x, object.y):
+	       #calculate the distance between this object and the player
+	       dist = player.distance_to(object)
+	       if dist < closest_dist:
+		    closest_enemy = object
+		    closest_dist = dist
+     return closest_enemy
 
 def render_bar(x, y, total_width, name, value, maximum, bar_color, back_color):
      #render a bar (HP, XP, etc), first calculate the width of the bar
@@ -579,6 +716,12 @@ def handle_keys():
 		    chosen_item = inventory_menu('Press the key next to an item to use it, or any other to cancel.\n')
 		    if chosen_item is not None:
 			 chosen_item.use()
+			 
+	       if key_char == 'd':
+		    #show the inventory; if an item is selected, drop it
+		    chosen_item = inventory_menu('Press the key next to an item to drop it, or any other to cancel. \n')
+		    if chosen_item is not None:
+			 chosen_item.drop()
 		    
 	       return 'didnt-take-turn'
 	  
