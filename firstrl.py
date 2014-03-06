@@ -1,6 +1,7 @@
 import libtcodpy as libtcod
 import math
 import textwrap
+import shelve
 
 SCREEN_WIDTH = 80
 SCREEN_HEIGHT = 50
@@ -289,7 +290,10 @@ def cast_fireball():
 	       
 	  
 def make_map():
-     global map 
+     global map, objects
+     
+     #the list of objects with just the player
+     objects = [player]
      
      #fill map with "blocked" tiles (true here mean's blocked aka unpassable)
      map = [[ Tile(True)
@@ -409,17 +413,17 @@ def place_objects(room):
 	  #only place it if the tile is not blocked
 	  if not is_blocked(x, y):
 	       dice = libtcod.random_get_int(0, 0, 100)
-	       if dice < 70:
+	       if dice < 60:
 		    #create a healing poition (70% chance)
 		    item_component = Item(use_function=cast_heal)
 		    item = Object(x, y, '!', 'healing potion', libtcod.violet, item=item_component)
 		    
-	       elif dice < 75+10:
+	       elif dice < 60+10:
 		    #create lighting bolt scroll (10% chance)
 		    item_component = Item(use_function=cast_lightning)
 		    item = Object(x, y, '#', 'scroll of lightning bolt', libtcod.light_yellow, item=item_component)
 		    
-	       elif dice < 70+10+10:
+	       elif dice < 60+10+10:
 		    #create a fireball scroll (10% chance)
 		    item_component = Item(use_function=cast_fireball)
 		    item = Object(x, y, '#', 'scroll of fireball', libtcod.light_yellow, item=item_component)
@@ -632,6 +636,8 @@ def menu(header, options, width):
      
      #calculate total height for the header (after auto-wrap) and one line per option
      header_height = libtcod.console_get_height_rect(con, 0, 0, width, SCREEN_HEIGHT, header)
+     if header == '':
+	  header_height = 0
      height = len(options) + header_height
      
      #create an off-screen console that represents the menu's window 
@@ -658,6 +664,10 @@ def menu(header, options, width):
      #present the root console to the player and wait for a key-press 
      libtcod.console_flush()
      key = libtcod.console_wait_for_keypress(True)
+     
+     if key.vk == libtcod.KEY_ENTER and key.lalt:
+	  #Alt+Enter: toggle fullscreen (special case)
+	  libtcod.console_set_fullscreen(not libtcod.console_is_fullscreen())
      
      #convert the ASCII code to an index; if it corresponds to an option, return it
      index = key.c - ord('a')
@@ -736,60 +746,129 @@ def message(new_msg, color = libtcod.white):
 	       
      #add the new line as a tuple, with the text and color
      game_msgs.append( (line, color) )
+     
+def new_game():
+     global player, inventory, game_msgs, game_state
+     
+     #create object representing the player
+     fighter_component = Fighter(hp=30, defense=2, power=5, death_function=player_death)
+     player = Object(0, 0, '@', 'player', libtcod.white, blocks=True, fighter=fighter_component)
+     
+     #generate map (at this point it's not drawn to the screen)
+     make_map()	  
+     initialize_fov()
+     
+     game_state = 'playing'
+     inventory = []
+     
+     #create the list of game messages and their colors, starts empty
+     game_msgs = []
+     
+     #a warm welcoming message!
+     message('Welcome stranger! Prepare to perish in my Lair of Horrors!', libtcod.red)
+     
+def initialize_fov():
+     global fov_recompute, fov_map
+     fov_recompute = True
+     
+     #create the FOV map, according to the generated map 
+     fov_map = libtcod.map_new(MAP_WIDTH, MAP_HEIGHT)
+     for y in range(MAP_HEIGHT):
+	  for x in range(MAP_WIDTH):
+	       libtcod.map_set_properties(fov_map, x, y, not map[x][y].block_sight, not map[x][y].blocked)
+	       
+     libtcod.console_clear(con)  #unexplored areas start black (which is the default background color)
+	       
+def play_game():
+     global key, mouse
+     player_action = None
+     
+     mouse = libtcod.Mouse()
+     key = libtcod.Key()
+     while not libtcod.console_is_window_closed():
+	  #render the screen
+	  libtcod.sys_check_for_event(libtcod.EVENT_KEY_PRESS|libtcod.EVENT_MOUSE,key,mouse)
+	  render_all()
+     
+	  libtcod.console_flush()
+     
+	  #erase all objects at their old locations, before they move
+	  for object in objects:
+	       object.clear()
+     
+	  #handle keys and exit game if needed
+	  player_action = handle_keys()
+	  if player_action == 'exit':
+	       save_game()
+	       break
+     
+	  #let monsters take their turn
+	  if game_state == 'playing' and player_action != 'didnt-take-turn':
+	       for object in objects:
+		    if object.ai:
+			 object.ai.take_turn()
+			 
+def load_game():
+     #open the previously saved shelve and load the game data
+     global map, objects, player, inventory, game_msgs, game_state
+     
+     file = shelve.open('savegame', 'r')
+     map = file['map']
+     objects = file['objects']
+     player = objects[file['player_index']] #get index of player in objects list and access it
+     inventory = file['inventory']
+     game_msgs = file['game_msgs']
+     game_state = file['game_state']
+     file.close()
+     
+     initialize_fov()
 
-#################################
-# Initialization and Main Loop
-#################################
+def main_menu():
+     img = libtcod.image_load('menu_background1.png')
+     
+     while not libtcod.console_is_window_closed():
+	  #show the background image at twice the console resolution
+	  libtcod.image_blit_2x(img, 0, 0, 0)
+	  
+	  #show the game's title, and some credits!
+	  libtcod.console_set_default_foreground(0, libtcod.light_yellow)
+	  libtcod.console_print_ex(0, SCREEN_WIDTH/2, SCREEN_HEIGHT/2-4, libtcod.BKGND_NONE, libtcod.CENTER,
+				   'LAIR OF THE UNKNOWN')
+	  libtcod.console_print_ex(0, SCREEN_WIDTH/2, SCREEN_HEIGHT-2, libtcod.BKGND_NONE, libtcod.CENTER,
+				   'By Johnny')
+
+	  #show options and wait for the player's choice
+	  choice = menu('', ['Play a new game', 'Continue last game', 'Quit'], 24)
+	  
+	  if choice == 0:  #new game
+	       new_game()
+	       play_game()
+	  if choice == 1:
+	       try:
+		    load_game()
+	       except:
+		    msgbox('\n No saved game to load. \n', 24)
+		    continue
+	       play_game()
+	  elif choice == 2:  #quit
+	       break
+	  
+def save_game():
+     #open a new empty shelve (possibly overwriting an old game) to write the game data
+     file = shelve.open('savegame', 'n')
+     file['map'] = map
+     file['objects'] = objects
+     file['player_index'] = objects.index(player) #index of player in objects list
+     file['inventory'] = inventory
+     file['game_msgs'] = game_msgs
+     file['game_state'] = game_state
+     file.close()
+	  
 libtcod.console_set_custom_font('arial10x10.png', libtcod.FONT_TYPE_GREYSCALE | libtcod.FONT_LAYOUT_TCOD)
 libtcod.console_init_root(SCREEN_WIDTH, SCREEN_HEIGHT, 'python/libtcod tutorial', False)
 libtcod.sys_set_fps(LIMIT_FPS)
 con = libtcod.console_new(MAP_WIDTH, MAP_HEIGHT)
 panel = libtcod.console_new(SCREEN_WIDTH, PANEL_HEIGHT)
 
-#initialize place object
-fighter_component = Fighter(hp=30, defense=2, power=5, death_function=player_death)
-player = Object(0, 0, '@', 'player', libtcod.white, blocks=True, fighter=fighter_component)
-
-objects = [player]
-
-make_map()
-
-#Create "fog of war" map
-fov_map = libtcod.map_new(MAP_WIDTH, MAP_HEIGHT)
-for y in range(MAP_HEIGHT):
-     for x in range(MAP_WIDTH):
-	  libtcod.map_set_properties(fov_map, x, y, not map[x][y].block_sight, not map[x][y].blocked)
-
-#global variables
-game_state = 'playing'
-player_action = None
-fov_recompute = True
-game_msgs = []
-mouse = libtcod.Mouse()
-key = libtcod.Key()
-inventory = []
-
-message('Welcome stranger! Prepare to perish in my Lair of Horrors!', libtcod.red)
-
-while not libtcod.console_is_window_closed():
-     libtcod.sys_check_for_event(libtcod.EVENT_KEY_PRESS|libtcod.EVENT_MOUSE,key,mouse)
-	  #render the screen
-     render_all()
-     
-     libtcod.console_flush()
-     
-     #erase all objects at their old locations, before they move
-     for object in objects:
-	  object.clear()
-     
-     #handle keys and exit game if needed
-     player_action = handle_keys()
-     if player_action == 'exit':
-	  break
-     
-     #let monsters take their turn
-     if game_state == 'playing' and player_action != 'didnt-take-turn':
-	  for object in objects:
-	       if object.ai:
-		    object.ai.take_turn()
-		    
+#start the game
+main_menu()   
